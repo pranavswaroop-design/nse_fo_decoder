@@ -1,0 +1,19 @@
+[package]
+name = "nse_fo_decoder"
+version = "0.1.0"
+edition = "2021"
+description = "Reverse-engineered decoder for NSE F&O (NNF) broadcast feed messages."
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "nse_fo_decoder"
+path = "src/lib.rs"
+
+# src/bin/nse_fo_decoder.rs is auto-discovered by Cargo as a binary target.
+
+[dependencies]
+byteorder = "1"
+libloading = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
