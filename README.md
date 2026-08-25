@@ -31,12 +31,17 @@ for msg in &messages {
 ## LZO1Z dependency
 
 Some messages arrive LZO1Z-compressed. Decompression is done via runtime
-dynamic loading (`libloading`) of `liblzo2-2.dll`, which must be present on
-the host and resolvable via the normal OS library search path. This is
-currently Windows-only (the DLL name is hardcoded in `src/lzo.rs`); porting
-to other platforms means resolving the equivalent `liblzo2` shared library
-name for that OS. Most Rust LZO crates implement LZO1X, not LZO1Z, and will
-not work here regardless of platform.
+dynamic loading (`libloading`) of `liblzo2`, which must be present on the
+host and resolvable via the normal OS library search path. Most Rust LZO
+crates implement LZO1X, not LZO1Z, and will not work here regardless of
+platform.
+
+Platform support: **Windows is verified** (`liblzo2-2.dll`, confirmed loadable
+and round-tripped through the real library in `cargo test`). Linux/macOS try
+conventional `liblzo2` SONAMEs (`liblzo2.so.2`, `liblzo2.dylib`, etc. -- see
+`src/lzo.rs`) but this is unvalidated guesswork, not tested on those
+platforms. If it fails to load there, check what your distro's package
+actually installs and adjust the candidate list.
 
 ## License
 

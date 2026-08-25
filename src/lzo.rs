@@ -1,14 +1,27 @@
-//! LZO1Z decompression via runtime dynamic loading of `liblzo2-2.dll` -- the
-//! same DLL the reference C++ implementation links against.
+//! LZO1Z decompression via runtime dynamic loading of `liblzo2` -- the same
+//! library the reference C++ implementation links against on Windows
+//! (`liblzo2-2.dll`).
 //!
 //! Most Rust LZO crates (`minilzo-rs`, `lzo1x`, ...) implement **LZO1X**, not
 //! **LZO1Z** -- they will NOT correctly decompress this feed. No headers or
-//! import library (`.lib`/`.dll.a`) for this LZO build are vendored anywhere
-//! on this machine, so instead of a build.rs + bindgen setup, this binds
-//! directly against the DLL's real exports via `libloading`. The exact export
-//! names were confirmed with `objdump -p liblzo2-2.dll` against the copy
-//! shipped alongside the MinGW toolchain used to build the C++ reference:
+//! import library (`.lib`/`.dll.a`) for this LZO build are vendored anywhere,
+//! so instead of a build.rs + bindgen setup, this binds directly against the
+//! shared library's real exports via `libloading`. The exact export names
+//! were confirmed with `objdump -p liblzo2-2.dll` against the copy shipped
+//! alongside the MinGW toolchain used to build the C++ reference:
 //! `lzo1z_decompress`, `lzo1z_decompress_safe`, `lzo1z_999_compress`, etc.
+//!
+//! ## Platform support: Windows verified, others best-effort/UNVALIDATED
+//! `LZO_LIBRARY_CANDIDATES` below tries `liblzo2-2.dll` on Windows (the name
+//! actually confirmed present and loadable on the machine this crate was
+//! ported on -- see the round-trip test), and falls back through a list of
+//! conventional `liblzo2` SONAMEs on Linux/macOS (`liblzo2.so.2`, etc.).
+//! Those non-Windows names are standard *nix shared-library naming
+//! conventions, NOT confirmed against a real liblzo2 install on those
+//! platforms -- nobody has run this crate's test suite there. If loading
+//! fails on Linux/macOS, check what your distro's `liblzo2`/`lzo` package
+//! actually installs (e.g. `ldconfig -p | grep lzo2` on Linux) and add that
+//! exact name to the candidate list for your platform.
 //!
 //! This uses `lzo1z_decompress_safe` (bounds-checked against the caller's
 //! output capacity) rather than the reference's unchecked `lzo1z_decompress`:
@@ -36,13 +49,27 @@ use thiserror::Error;
 
 type LzoUint = u32;
 
-const DLL_NAME: &str = "liblzo2-2.dll";
+/// Candidate library names to try, in order, for the current platform.
+/// Windows' `liblzo2-2.dll` is the only entry actually verified to load (see
+/// module docs above) -- the rest are unverified conventional guesses.
+#[cfg(target_os = "windows")]
+const LZO_LIBRARY_CANDIDATES: &[&str] = &["liblzo2-2.dll"];
+#[cfg(target_os = "macos")]
+const LZO_LIBRARY_CANDIDATES: &[&str] = &["liblzo2.2.dylib", "liblzo2.dylib"];
+#[cfg(all(unix, not(target_os = "macos")))]
+const LZO_LIBRARY_CANDIDATES: &[&str] = &["liblzo2.so.2", "liblzo2.so"];
+#[cfg(not(any(target_os = "windows", unix)))]
+const LZO_LIBRARY_CANDIDATES: &[&str] = &[];
+
 const LZO_E_OK: c_int = 0;
 
 #[derive(Debug, Error)]
 pub enum LzoError {
-    #[error("failed to load {0}: {1}")]
-    LoadFailed(&'static str, String),
+    #[error("failed to load any of {candidates:?}: {last_error}")]
+    LoadFailed {
+        candidates: &'static [&'static str],
+        last_error: String,
+    },
 
     #[error("symbol {0} not found in {1}: {2}")]
     SymbolNotFound(&'static str, &'static str, String),
@@ -62,16 +89,34 @@ type DecompressSafeFn = unsafe extern "C" fn(
     wrkmem: *mut c_void,
 ) -> c_int;
 
-fn library() -> Result<&'static Library, LzoError> {
-    static LIB: OnceLock<Result<Library, String>> = OnceLock::new();
-    let cell = LIB.get_or_init(|| unsafe { Library::new(DLL_NAME) }.map_err(|e| e.to_string()));
-    cell.as_ref()
-        .map_err(|msg| LzoError::LoadFailed(DLL_NAME, msg.clone()))
+/// The candidate name that actually loaded, alongside the open `Library` --
+/// kept so error messages about missing symbols can name the real library.
+struct LoadedLibrary {
+    name: &'static str,
+    lib: Library,
 }
 
-fn decompress_safe_symbol(lib: &Library) -> Result<Symbol<'_, DecompressSafeFn>, LzoError> {
-    unsafe { lib.get(b"lzo1z_decompress_safe\0") }
-        .map_err(|e| LzoError::SymbolNotFound("lzo1z_decompress_safe", DLL_NAME, e.to_string()))
+fn library() -> Result<&'static LoadedLibrary, LzoError> {
+    static LIB: OnceLock<Result<LoadedLibrary, String>> = OnceLock::new();
+    let cell = LIB.get_or_init(|| {
+        let mut last_error = "no candidate library names for this platform".to_string();
+        for &name in LZO_LIBRARY_CANDIDATES {
+            match unsafe { Library::new(name) } {
+                Ok(lib) => return Ok(LoadedLibrary { name, lib }),
+                Err(e) => last_error = e.to_string(),
+            }
+        }
+        Err(last_error)
+    });
+    cell.as_ref().map_err(|last_error| LzoError::LoadFailed {
+        candidates: LZO_LIBRARY_CANDIDATES,
+        last_error: last_error.clone(),
+    })
+}
+
+fn decompress_safe_symbol(lib: &LoadedLibrary) -> Result<Symbol<'_, DecompressSafeFn>, LzoError> {
+    unsafe { lib.lib.get(b"lzo1z_decompress_safe\0") }
+        .map_err(|e| LzoError::SymbolNotFound("lzo1z_decompress_safe", lib.name, e.to_string()))
 }
 
 /// Decompresses `input` (LZO1Z-compressed bytes) into `output`, returning the
@@ -127,9 +172,9 @@ mod tests {
     /// not that the framing offsets elsewhere in this crate are correct.
     #[test]
     fn round_trips_through_the_real_dll() {
-        let lib = library().expect("liblzo2-2.dll must be loadable for this test to mean anything");
-        let compress: Symbol<CompressFn> = unsafe { lib.get(b"lzo1z_999_compress\0") }
-            .expect("lzo1z_999_compress must be exported by liblzo2-2.dll");
+        let lib = library().expect("liblzo2 must be loadable for this test to mean anything");
+        let compress: Symbol<CompressFn> = unsafe { lib.lib.get(b"lzo1z_999_compress\0") }
+            .expect("lzo1z_999_compress must be exported by liblzo2");
 
         let plain: Vec<u8> = b"NSE FO DECODER LZO1Z ROUNDTRIP SELF TEST. "
             .iter()
