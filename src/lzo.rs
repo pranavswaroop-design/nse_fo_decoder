@@ -170,7 +170,11 @@ mod tests {
     /// decompress with our `decompress_lzo1z`, compare bytes. No captured NSE
     /// packet is needed for this: it only proves the FFI plumbing is sound,
     /// not that the framing offsets elsewhere in this crate are correct.
+    /// Ignored by default since it needs `liblzo2` resolvable on this
+    /// machine's DLL search path -- run explicitly with
+    /// `cargo test -p nse_fo_decoder -- --ignored` where it's available.
     #[test]
+    #[ignore = "requires liblzo2-2.dll resolvable on this machine"]
     fn round_trips_through_the_real_dll() {
         let lib = library().expect("liblzo2 must be loadable for this test to mean anything");
         let compress: Symbol<CompressFn> = unsafe { lib.lib.get(b"lzo1z_999_compress\0") }
