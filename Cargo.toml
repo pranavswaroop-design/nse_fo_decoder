@@ -6,6 +6,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Reverse-engineered decoder for NSE F&O (NNF) broadcast feed messages."
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/pranavswaroop-design/nse_fo_decoder"
 keywords = ["nse", "market-data", "broadcast", "decoder", "trading"]
 categories = ["encoding", "parsing", "network-programming"]
 
